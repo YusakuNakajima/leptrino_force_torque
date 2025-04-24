@@ -1,4 +1,5 @@
 <launch>
+    # You can select by id "/dev/serial/by-id/xxxx"
     <arg name="comport" default="/dev/ttyACM0" />
     <arg name="sampling_rate" default="1200" />
     <node name="leptrino" pkg="leptrino_force_torque" type="leptrino_force_torque"
