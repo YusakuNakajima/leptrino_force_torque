@@ -32,18 +32,11 @@
  * Notice: Modified & copied from Leptrino CD example source code
  */
 
-// =============================================================================
-//	CFS_Sample 本体部
-//
-//					Filename: main.c
-//
-// =============================================================================
-//		Ver 1.0.0		2012/11/01
-// =============================================================================
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <mutex>
 
 #include <leptrino/pCommon.h>
 #include <leptrino/rs_comm.h>
@@ -52,342 +45,255 @@
 #include <ros/ros.h>
 #include <geometry_msgs/WrenchStamped.h>
 
-// =============================================================================
-//	マクロ定義
-// =============================================================================
-#define PRG_VER	 "Ver 1.0.0"
-
-// =============================================================================
-//	構造体定義
-// =============================================================================
 typedef struct ST_SystemInfo
 {
   int com_ok;
 } SystemInfo;
 
-// =============================================================================
-//	プロトタイプ宣言
-// =============================================================================
-void App_Init(void);
-void App_Close(void);
-ULONG SendData(UCHAR *pucInput, USHORT usSize);
-void GetProductInfo(void);
-void GetLimit(void);
-void SerialStart(void);
-void SerialStop(void);
 
-// =============================================================================
-//	モジュール変数定義
-// =============================================================================
-SystemInfo gSys;
-UCHAR CommRcvBuff[256];
-UCHAR CommSendBuff[1024];
-UCHAR SendBuff[512];
-double conversion_factor[FN_Num];
+// Leptrinoセンサーとの通信を行うクラス
+class LeptrinoSensor
+{
+private:
+    SystemInfo gSys;
+    UCHAR CommRcvBuff[256];
+    UCHAR CommSendBuff[1024];
+    UCHAR SendBuff[512];
+    double conversion_factor[FN_Num];
+    std::string g_com_port;
 
-std::string g_com_port;
-int g_rate;
+public:
+    LeptrinoSensor() {
+        memset(conversion_factor, 0, sizeof(conversion_factor));
+    }
 
-#define TEST_TIME 0
+    bool init(const std::string& port)
+    {
+        g_com_port = port;
+        gSys.com_ok = NG;
+        int rt = Comm_Open(g_com_port.c_str());
+        if (rt == OK)
+        {
+            Comm_Setup(460800, PAR_NON, BIT_LEN_8, 0, 0, CHR_ETX);
+            gSys.com_ok = OK;
+        }
+        return gSys.com_ok == OK;
+    }
+
+    void close()
+    {
+        if (gSys.com_ok == OK)
+        {
+            Comm_Close();
+        }
+    }
+
+    void sendData(UCHAR *pucInput, USHORT usSize)
+    {
+      USHORT usCnt; UCHAR ucWork; UCHAR ucBCC = 0; UCHAR *pucWrite = &CommSendBuff[0]; USHORT usRealSize;
+      *pucWrite = CHR_DLE; pucWrite++; *pucWrite = CHR_STX; pucWrite++; usRealSize = 2;
+      for (usCnt = 0; usCnt < usSize; usCnt++){
+        ucWork = pucInput[usCnt];
+        if (ucWork == CHR_DLE){ *pucWrite = CHR_DLE; pucWrite++; usRealSize++; }
+        *pucWrite = ucWork; ucBCC ^= ucWork; pucWrite++; usRealSize++;
+      }
+      *pucWrite = CHR_DLE; pucWrite++; *pucWrite = CHR_ETX; ucBCC ^= CHR_ETX; pucWrite++; *pucWrite = ucBCC; usRealSize += 3;
+      Comm_SendData(&CommSendBuff[0], usRealSize);
+    }
+
+    void getProductInfo()
+    {
+        ROS_INFO("Get sensor information");
+        USHORT len = 0x04; SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_GET_INF; SendBuff[3] = 0;
+        sendData(SendBuff, len);
+    }
+
+    void getLimit()
+    {
+        ROS_INFO("Get sensor limit");
+        USHORT len = 0x04; SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_GET_LIMIT; SendBuff[3] = 0;
+        sendData(SendBuff, len);
+    }
+
+    void serialStart()
+    {
+        ROS_INFO("Start sensor");
+        USHORT len = 0x04; SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_DATA_START; SendBuff[3] = 0;
+        sendData(SendBuff, len);
+    }
+
+    void serialStop()
+    {
+        printf("Stop sensor\n");
+        USHORT len = 0x04; SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_DATA_STOP; SendBuff[3] = 0;
+        sendData(SendBuff, len);
+    }
+
+    // データ受信と処理を行う関数
+    bool read(geometry_msgs::Wrench& wrench)
+    {
+        Comm_Rcv();
+        if (Comm_CheckRcv() != 0)
+        {
+            memset(CommRcvBuff, 0, sizeof(CommRcvBuff));
+            int rt = Comm_GetRcvData(CommRcvBuff);
+            if (rt > 0)
+            {
+                ST_R_DATA_GET_F *stForce = (ST_R_DATA_GET_F *)CommRcvBuff;
+                wrench.force.x = stForce->ssForce[0] * conversion_factor[0];
+                wrench.force.y = stForce->ssForce[1] * conversion_factor[1];
+                wrench.force.z = stForce->ssForce[2] * conversion_factor[2];
+                wrench.torque.x = stForce->ssForce[3] * conversion_factor[3];
+                wrench.torque.y = stForce->ssForce[4] * conversion_factor[4];
+                wrench.torque.z = stForce->ssForce[5] * conversion_factor[5];
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool initializeSensor() {
+        getProductInfo();
+        ros::Time start_time = ros::Time::now();
+        while(ros::ok() && (ros::Time::now() - start_time).toSec() < 2.0) {
+            Comm_Rcv();
+            if(Comm_CheckRcv()!=0) {
+                int rt = Comm_GetRcvData(CommRcvBuff);
+                if(rt > 0) {
+                    ST_R_GET_INF *stGetInfo = (ST_R_GET_INF *)CommRcvBuff;
+                    stGetInfo->scFVer[F_VER_SIZE] = 0;
+                    ROS_INFO("Version: %s", stGetInfo->scFVer);
+                    stGetInfo->scSerial[SERIAL_SIZE] = 0;
+                    ROS_INFO("SerialNo: %s", stGetInfo->scSerial);
+                    stGetInfo->scPName[P_NAME_SIZE] = 0;
+                    ROS_INFO("Type: %s", stGetInfo->scPName);
+                    goto GET_LIMIT;
+                }
+            }
+            ros::Duration(0.01).sleep();
+        }
+        ROS_ERROR("Failed to get sensor product info.");
+        return false;
+
+    GET_LIMIT:
+        getLimit();
+        start_time = ros::Time::now();
+        while(ros::ok() && (ros::Time::now() - start_time).toSec() < 2.0) {
+            Comm_Rcv();
+            if(Comm_CheckRcv()!=0) {
+                int rt = Comm_GetRcvData(CommRcvBuff);
+                if(rt > 0) {
+                    ST_R_LEP_GET_LIMIT* stGetLimit = (ST_R_LEP_GET_LIMIT *)CommRcvBuff;
+                    for(int i = 0; i < FN_Num; i++) {
+                        conversion_factor[i] = stGetLimit->fLimit[i] * 1e-4;
+                    }
+                    ROS_INFO("Sensor limit values received successfully.");
+                    return true;
+                }
+            }
+            ros::Duration(0.01).sleep();
+        }
+        ROS_ERROR("Failed to get sensor limit.");
+        return false;
+    }
+};
+
+
+// ROSノード全体を管理するクラス
+class LeptrinoNode
+{
+private:
+    ros::NodeHandle nh_;
+    ros::NodeHandle nh_private_;
+    ros::Publisher wrench_pub_;
+    ros::Timer publish_timer_;
+    LeptrinoSensor sensor_;
+
+    geometry_msgs::Wrench latest_wrench_;
+    std::mutex wrench_mutex_;
+    std::string frame_id_;
+    bool new_data_available_;
+
+public:
+    LeptrinoNode() : nh_private_("~"), new_data_available_(false)
+    {
+        std::string port;
+        int rate;
+        nh_private_.param<std::string>("com_port", port, "/dev/ttyUSB0");
+        nh_private_.param<std::string>("frame_id", frame_id_, "leptrino");
+        nh_private_.param<int>("rate", rate, 100);
+
+        if (!sensor_.init(port)) {
+            ROS_FATAL("Failed to initialize sensor on port %s. Shutting down.", port.c_str());
+            ros::shutdown();
+            return;
+        }
+        if (!sensor_.initializeSensor()) {
+            ROS_FATAL("Failed to get sensor info and limit. Shutting down.");
+            ros::shutdown();
+            return;
+        }
+
+        wrench_pub_ = nh_private_.advertise<geometry_msgs::WrenchStamped>("wrench", 10);
+        
+        publish_timer_ = nh_.createTimer(ros::Duration(1.0 / rate), &LeptrinoNode::timerCallback, this);
+
+        ROS_INFO("Leptrino node started. Publishing at %d Hz.", rate);
+    }
+
+    ~LeptrinoNode() {
+        sensor_.serialStop();
+        sensor_.close();
+    }
+
+    void timerCallback(const ros::TimerEvent& event)
+    {
+        if(!new_data_available_) {
+            ROS_WARN_THROTTLE(1.0, "Timer callback triggered, but no new data is available from the sensor.");
+            return;
+        }
+
+        geometry_msgs::WrenchStamped msg;
+        msg.header.stamp = ros::Time::now();
+        msg.header.frame_id = frame_id_;
+
+        {
+            std::lock_guard<std::mutex> lock(wrench_mutex_);
+            msg.wrench = latest_wrench_;
+        }
+        
+        wrench_pub_.publish(msg);
+    }
+
+    void run()
+    {
+        if(ros::isShuttingDown()) return; // Abort if initialization failed
+
+        sensor_.serialStart();
+        ros::Rate read_rate(1200); 
+
+        while(ros::ok())
+        {
+            geometry_msgs::Wrench temp_wrench;
+            if(sensor_.read(temp_wrench))
+            {
+                {
+                    std::lock_guard<std::mutex> lock(wrench_mutex_);
+                    latest_wrench_ = temp_wrench;
+                    new_data_available_ = true;
+                }
+            }
+            ros::spinOnce();
+            read_rate.sleep();
+        }
+    }
+};
+
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "leptrino");
-
-  ros::NodeHandle nh;
-  ros::NodeHandle nh_private("~");
-  if (!nh_private.getParam("com_port", g_com_port))
-  {
-    ROS_WARN("Port is not defined, trying /dev/ttyUSB0");
-    g_com_port = "/dev/ttyUSB0";
-  }
-
-  if (!nh_private.getParam("rate", g_rate))
-  {
-    ROS_WARN("Rate is not defined, using maximum 1.2 kHz");
-    g_rate = 1200;
-  }
-  else{
-    ROS_INFO("Leptrino sample rate: %d Hz", g_rate);
-  }
-  ros::Rate rate(g_rate);
-
-  std::string frame_id = "leptrino";
-  nh_private.getParam("frame_id", frame_id);
-
-  int i, l = 0, rt = 0;
-  ST_RES_HEAD *stCmdHead;
-  ST_R_DATA_GET_F *stForce;
-  ST_R_GET_INF *stGetInfo;
-  ST_R_LEP_GET_LIMIT* stGetLimit;
-
-  App_Init();
-
-  if (gSys.com_ok == NG)
-  {
-    ROS_ERROR("%s open failed\n", g_com_port.c_str());
-    exit(0);
-  }
-
-  // 製品情報取得
-  GetProductInfo();
-  while (ros::ok())
-  {
-    Comm_Rcv();
-    if (Comm_CheckRcv() != 0)
-    { //受信データ有
-      CommRcvBuff[0] = 0;
-
-      rt = Comm_GetRcvData(CommRcvBuff);
-      if (rt > 0)
-      {
-        stGetInfo = (ST_R_GET_INF *)CommRcvBuff;
-        stGetInfo->scFVer[F_VER_SIZE] = 0;
-        ROS_INFO("Version: %s", stGetInfo->scFVer);
-        stGetInfo->scSerial[SERIAL_SIZE] = 0;
-        ROS_INFO("SerialNo: %s", stGetInfo->scSerial);
-        stGetInfo->scPName[P_NAME_SIZE] = 0;
-        ROS_INFO("Type: %s", stGetInfo->scPName);
-        break;
-      }
-    }
-    else
-    {
-      rate.sleep();
-    }
-  }
-
-  GetLimit();
-  while (ros::ok())
-  {
-    Comm_Rcv();
-    if (Comm_CheckRcv() != 0)
-    { //受信データ有
-      CommRcvBuff[0] = 0;
-
-      rt = Comm_GetRcvData(CommRcvBuff);
-      if (rt > 0)
-      {
-        stGetLimit = (ST_R_LEP_GET_LIMIT *)CommRcvBuff;
-        for (int i = 0; i < FN_Num; i++)
-        {
-          ROS_INFO("\tLimit[%d]: %f", i, stGetLimit->fLimit[i]);
-          conversion_factor[i] = stGetLimit->fLimit[i] * 1e-4;
-        }
-        break;
-      }
-    }
-    else
-    {
-      rate.sleep();
-    }
-  }
-
-  ros::Publisher force_torque_pub = nh_private.advertise<geometry_msgs::WrenchStamped>("wrench", 1);
-
-  usleep(10000);
-
-  // 連続送信開始
-  SerialStart();
-
-#if TEST_TIME
-  double dt_sum = 0;
-  int dt_count = 0;
-  ros::Time start_time;
-#endif
-
-  while (ros::ok())
-  {
-    Comm_Rcv();
-    if (Comm_CheckRcv() != 0)
-    { //受信データ有
-
-#if TEST_TIME
-      dt_count++;
-      dt_sum += (ros::Time::now() - start_time).toSec();
-      if (dt_sum >= 1.0)
-      {
-        ROS_INFO("Time test: read %d in %6.3f sec: %6.3f kHz", dt_count, dt_sum, (dt_count / dt_sum) * 0.001);
-        dt_count = 0;
-        dt_sum = 0.0;
-      }
-      start_time = ros::Time::now();
-#endif
-
-      memset(CommRcvBuff, 0, sizeof(CommRcvBuff));
-      rt = Comm_GetRcvData(CommRcvBuff);
-      if (rt > 0)
-      {
-        stForce = (ST_R_DATA_GET_F *)CommRcvBuff;
-        ROS_DEBUG_THROTTLE(0.1, "%d,%d,%d,%d,%d,%d", stForce->ssForce[0], stForce->ssForce[1], stForce->ssForce[2],
-                           stForce->ssForce[3], stForce->ssForce[4], stForce->ssForce[5]);
-
-        geometry_msgs::WrenchStampedPtr msg(new geometry_msgs::WrenchStamped);
-        msg->header.stamp = ros::Time::now();
-        msg->header.frame_id = frame_id;
-        msg->wrench.force.x = stForce->ssForce[0] * conversion_factor[0];
-        msg->wrench.force.y = stForce->ssForce[1] * conversion_factor[1];
-        msg->wrench.force.z = stForce->ssForce[2] * conversion_factor[2];
-        msg->wrench.torque.x = stForce->ssForce[3] * conversion_factor[3];
-        msg->wrench.torque.y = stForce->ssForce[4] * conversion_factor[4];
-        msg->wrench.torque.z = stForce->ssForce[5] * conversion_factor[5];
-        force_torque_pub.publish(msg);
-      }
-    }
-    else
-    {
-      rate.sleep();
-    }
-
-    ros::spinOnce();
-  } //while
-
-  SerialStop();
-  App_Close();
+  ros::init(argc, argv, "leptrino_force_torque");
+  LeptrinoNode node;
+  node.run();
   return 0;
-}
-
-// ----------------------------------------------------------------------------------
-//	アプリケーション初期化
-// ----------------------------------------------------------------------------------
-//	引数	: non
-//	戻り値	: non
-// ----------------------------------------------------------------------------------
-void App_Init(void)
-{
-  int rt;
-
-  //Commポート初期化
-  gSys.com_ok = NG;
-  rt = Comm_Open(g_com_port.c_str());
-  if (rt == OK)
-  {
-    Comm_Setup(460800, PAR_NON, BIT_LEN_8, 0, 0, CHR_ETX);
-    gSys.com_ok = OK;
-  }
-
-}
-
-// ----------------------------------------------------------------------------------
-//	アプリケーション終了処理
-// ----------------------------------------------------------------------------------
-//	引数	: non
-//	戻り値	: non
-// ----------------------------------------------------------------------------------
-void App_Close(void)
-{
-  printf("Application close\n");
-
-  if (gSys.com_ok == OK)
-  {
-    Comm_Close();
-  }
-}
-
-/*********************************************************************************
- * Function Name  : HST_SendResp
- * Description    : データを整形して送信する
- * Input          : pucInput 送信データ
- *                : 送信データサイズ
- * Output         :
- * Return         :
- *********************************************************************************/
-ULONG SendData(UCHAR *pucInput, USHORT usSize)
-{
-  USHORT usCnt;
-  UCHAR ucWork;
-  UCHAR ucBCC = 0;
-  UCHAR *pucWrite = &CommSendBuff[0];
-  USHORT usRealSize;
-
-  // データ整形
-  *pucWrite = CHR_DLE; // DLE
-  pucWrite++;
-  *pucWrite = CHR_STX; // STX
-  pucWrite++;
-  usRealSize = 2;
-
-  for (usCnt = 0; usCnt < usSize; usCnt++)
-  {
-    ucWork = pucInput[usCnt];
-    if (ucWork == CHR_DLE)
-    { // データが0x10ならば0x10を付加
-      *pucWrite = CHR_DLE; // DLE付加
-      pucWrite++; // 書き込み先
-      usRealSize++; // 実サイズ
-      // BCCは計算しない!
-    }
-    *pucWrite = ucWork; // データ
-    ucBCC ^= ucWork; // BCC
-    pucWrite++; // 書き込み先
-    usRealSize++; // 実サイズ
-  }
-
-  *pucWrite = CHR_DLE; // DLE
-  pucWrite++;
-  *pucWrite = CHR_ETX; // ETX
-  ucBCC ^= CHR_ETX; // BCC計算
-  pucWrite++;
-  *pucWrite = ucBCC; // BCC付加
-  usRealSize += 3;
-
-  Comm_SendData(&CommSendBuff[0], usRealSize);
-
-  return OK;
-}
-
-void GetProductInfo(void)
-{
-  USHORT len;
-
-  ROS_INFO("Get sensor information");
-  len = 0x04; // データ長
-  SendBuff[0] = len; // レングス
-  SendBuff[1] = 0xFF; // センサNo.
-  SendBuff[2] = CMD_GET_INF; // コマンド種別
-  SendBuff[3] = 0; // 予備
-
-  SendData(SendBuff, len);
-}
-
-void GetLimit(void)
-{
-  USHORT len;
-
-  ROS_INFO("Get sensor limit");
-  len = 0x04;
-  SendBuff[0] = len; // レングス
-  SendBuff[1] = 0xFF; // センサNo.
-  SendBuff[2] = CMD_GET_LIMIT; // コマンド種別
-  SendBuff[3] = 0; // 予備
-
-  SendData(SendBuff, len);
-}
-
-void SerialStart(void)
-{
-  USHORT len;
-
-  ROS_INFO("Start sensor");
-  len = 0x04; // データ長
-  SendBuff[0] = len; // レングス
-  SendBuff[1] = 0xFF; // センサNo.
-  SendBuff[2] = CMD_DATA_START; // コマンド種別
-  SendBuff[3] = 0; // 予備
-
-  SendData(SendBuff, len);
-}
-
-void SerialStop(void)
-{
-  USHORT len;
-
-  printf("Stop sensor\n");
-  len = 0x04; // データ長
-  SendBuff[0] = len; // レングス
-  SendBuff[1] = 0xFF; // センサNo.
-  SendBuff[2] = CMD_DATA_STOP; // コマンド種別
-  SendBuff[3] = 0; // 予備
-
-  SendData(SendBuff, len);
 }
