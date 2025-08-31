@@ -35,15 +35,17 @@
 
 #include <mutex>
 #include <string>
+#include <chrono>
+#include <thread>
 
 // Leptrino SDK Headers
 #include <leptrino/pCommon.h>
 #include <leptrino/pComResInternal.h>
 #include <leptrino/rs_comm.h>
 
-// ROS Headers
-#include <ros/ros.h>
-#include <geometry_msgs/WrenchStamped.h>
+// ROS2 Headers
+#include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/wrench_stamped.hpp>
 
 namespace leptrino_constants {
 const double SENSOR_INIT_TIMEOUT_SEC = 2.0;
@@ -121,13 +123,13 @@ public:
     {
         if (!getProductInformation())
         {
-            ROS_ERROR("Failed to get sensor product info.");
+            RCLCPP_ERROR(rclcpp::get_logger("leptrino_sensor"), "Failed to get sensor product info.");
             return false;
         }
 
         if (!getSensorLimit())
         {
-            ROS_ERROR("Failed to get sensor limit.");
+            RCLCPP_ERROR(rclcpp::get_logger("leptrino_sensor"), "Failed to get sensor limit.");
             return false;
         }
         return true;
@@ -138,7 +140,7 @@ public:
      */
     void serialStart()
     {
-        ROS_INFO("Starting sensor data stream.");
+        RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "Starting sensor data stream.");
         USHORT len = 0x04;
         SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_DATA_START; SendBuff[3] = 0;
         sendData(SendBuff, len);
@@ -149,7 +151,7 @@ public:
      */
     void serialStop()
     {
-        ROS_INFO("Stopping sensor data stream.");
+        RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "Stopping sensor data stream.");
         USHORT len = 0x04;
         SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_DATA_STOP; SendBuff[3] = 0;
         sendData(SendBuff, len);
@@ -160,7 +162,7 @@ public:
      * @param[out] wrench 読み取ったデータが格納されるWrenchメッセージ
      * @return データの読み取りに成功した場合は true
      */
-    bool read(geometry_msgs::Wrench& wrench)
+    bool read(geometry_msgs::msg::Wrench& wrench)
     {
         Comm_Rcv();
         if (Comm_CheckRcv() != 0)
@@ -216,7 +218,7 @@ private:
      */
     void getProductInfo()
     {
-        ROS_INFO("Requesting sensor product information...");
+        RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "Requesting sensor product information...");
         USHORT len = 0x04; SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_GET_INF; SendBuff[3] = 0;
         sendData(SendBuff, len);
     }
@@ -226,7 +228,7 @@ private:
      */
     void getLimit()
     {
-        ROS_INFO("Requesting sensor limit values...");
+        RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "Requesting sensor limit values...");
         USHORT len = 0x04; SendBuff[0] = len; SendBuff[1] = 0xFF; SendBuff[2] = CMD_GET_LIMIT; SendBuff[3] = 0;
         sendData(SendBuff, len);
     }
@@ -238,22 +240,27 @@ private:
     bool getProductInformation()
     {
         getProductInfo();
-        ros::Time start_time = ros::Time::now();
-        while (ros::ok() && (ros::Time::now() - start_time).toSec() < leptrino_constants::SENSOR_INIT_TIMEOUT_SEC)
+        auto start_time = std::chrono::steady_clock::now();
+        while (rclcpp::ok())
         {
+            auto current_time = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration<double>(current_time - start_time).count();
+            if (elapsed >= leptrino_constants::SENSOR_INIT_TIMEOUT_SEC)
+                break;
+
             Comm_Rcv();
             if (Comm_CheckRcv() != 0 && Comm_GetRcvData(CommRcvBuff) > 0)
             {
                 ST_R_GET_INF *stGetInfo = (ST_R_GET_INF *)CommRcvBuff;
-                stGetInfo->scFVer[F_VER_SIZE] = '\0';
-                ROS_INFO("  - Version: %s", stGetInfo->scFVer);
-                stGetInfo->scSerial[SERIAL_SIZE] = '\0';
-                ROS_INFO("  - SerialNo: %s", stGetInfo->scSerial);
-                stGetInfo->scPName[P_NAME_SIZE] = '\0';
-                ROS_INFO("  - Type: %s", stGetInfo->scPName);
+                stGetInfo->scFVer[F_VER_SIZE-1] = '\0';
+                RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "  - Version: %s", stGetInfo->scFVer);
+                stGetInfo->scSerial[SERIAL_SIZE-1] = '\0';
+                RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "  - SerialNo: %s", stGetInfo->scSerial);
+                stGetInfo->scPName[P_NAME_SIZE-1] = '\0';
+                RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "  - Type: %s", stGetInfo->scPName);
                 return true;
             }
-            ros::Duration(leptrino_constants::SENSOR_INIT_POLL_DURATION_SEC).sleep();
+            std::this_thread::sleep_for(std::chrono::duration<double>(leptrino_constants::SENSOR_INIT_POLL_DURATION_SEC));
         }
         return false;
     }
@@ -265,9 +272,14 @@ private:
     bool getSensorLimit()
     {
         getLimit();
-        ros::Time start_time = ros::Time::now();
-        while (ros::ok() && (ros::Time::now() - start_time).toSec() < leptrino_constants::SENSOR_INIT_TIMEOUT_SEC)
+        auto start_time = std::chrono::steady_clock::now();
+        while (rclcpp::ok())
         {
+            auto current_time = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration<double>(current_time - start_time).count();
+            if (elapsed >= leptrino_constants::SENSOR_INIT_TIMEOUT_SEC)
+                break;
+
             Comm_Rcv();
             if (Comm_CheckRcv() != 0 && Comm_GetRcvData(CommRcvBuff) > 0)
             {
@@ -276,10 +288,10 @@ private:
                 {
                     conversion_factor[i] = stGetLimit->fLimit[i] * 1e-4;
                 }
-                ROS_INFO("Sensor limit values received successfully.");
+                RCLCPP_INFO(rclcpp::get_logger("leptrino_sensor"), "Sensor limit values received successfully.");
                 return true;
             }
-            ros::Duration(leptrino_constants::SENSOR_INIT_POLL_DURATION_SEC).sleep();
+            std::this_thread::sleep_for(std::chrono::duration<double>(leptrino_constants::SENSOR_INIT_POLL_DURATION_SEC));
         }
         return false;
     }
@@ -288,18 +300,16 @@ private:
 
 /**
  * @class LeptrinoNode
- * @brief センサーからのデータ読み取りとROSトピックへの公開を管理するROSノードクラス
+ * @brief センサーからのデータ読み取りとROSトピックへの公開を管理するROS2ノードクラス
  */
-class LeptrinoNode
+class LeptrinoNode : public rclcpp::Node
 {
 private:
-    ros::NodeHandle nh_;
-    ros::NodeHandle nh_private_;
-    ros::Publisher wrench_pub_;
-    ros::Timer publish_timer_;
+    rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_pub_;
+    rclcpp::TimerBase::SharedPtr publish_timer_;
     LeptrinoSensor sensor_;
 
-    geometry_msgs::Wrench latest_wrench_;
+    geometry_msgs::msg::Wrench latest_wrench_;
     std::mutex wrench_mutex_;
     std::string frame_id_;
     bool new_data_available_;
@@ -309,37 +319,44 @@ public:
     /**
      * @brief コンストラクタ
      */
-    LeptrinoNode() : nh_private_("~"), new_data_available_(false), is_initialized_ok_(false)
+    LeptrinoNode() : Node("leptrino_force_torque_node"), new_data_available_(false), is_initialized_ok_(false)
     {
-        std::string port;
-        double rate_hz;
-        nh_private_.param<std::string>("com_port", port, "/dev/ttyUSB0");
-        nh_private_.param<std::string>("frame_id", frame_id_, "leptrino_link");
-        nh_private_.param<double>("rate", rate_hz, 100.0);
+        // Declare parameters
+        this->declare_parameter("com_port", "/dev/ttyUSB0");
+        this->declare_parameter("frame_id", "leptrino_link");
+        this->declare_parameter("rate", 100.0);
+
+        // Get parameters
+        std::string port = this->get_parameter("com_port").as_string();
+        frame_id_ = this->get_parameter("frame_id").as_string();
+        double rate_hz = this->get_parameter("rate").as_double();
 
         if(rate_hz <= 0)
         {
-            ROS_WARN("Parameter 'rate' must be positive. Defaulting to 1.0 Hz.");
+            RCLCPP_WARN(this->get_logger(), "Parameter 'rate' must be positive. Defaulting to 1.0 Hz.");
             rate_hz = 1.0;
         }
 
         if (!sensor_.init(port))
         {
-            ROS_FATAL("Failed to initialize sensor on port %s. Shutting down.", port.c_str());
-            ros::shutdown();
+            RCLCPP_FATAL(this->get_logger(), "Failed to initialize sensor on port %s. Shutting down.", port.c_str());
+            rclcpp::shutdown();
             return;
         }
         if (!sensor_.initializeSensor())
         {
-            ROS_FATAL("Failed to configure sensor (get info and limit). Shutting down.");
-            ros::shutdown();
+            RCLCPP_FATAL(this->get_logger(), "Failed to configure sensor (get info and limit). Shutting down.");
+            rclcpp::shutdown();
             return;
         }
 
-        wrench_pub_ = nh_private_.advertise<geometry_msgs::WrenchStamped>("wrench", 10);
-        publish_timer_ = nh_.createTimer(ros::Duration(1.0 / rate_hz), &LeptrinoNode::timerCallback, this);
+        wrench_pub_ = this->create_publisher<geometry_msgs::msg::WrenchStamped>("wrench", 10);
+        publish_timer_ = this->create_wall_timer(
+            std::chrono::duration<double>(1.0 / rate_hz),
+            std::bind(&LeptrinoNode::timerCallback, this)
+        );
 
-        ROS_INFO("Leptrino node started. Publishing at %.1f Hz.", rate_hz);
+        RCLCPP_INFO(this->get_logger(), "Leptrino node started. Publishing at %.1f Hz.", rate_hz);
         is_initialized_ok_ = true;
     }
 
@@ -361,17 +378,17 @@ public:
     {
         if (!is_initialized_ok_)
         {
-            ROS_ERROR("Node was not initialized correctly. Aborting run().");
+            RCLCPP_ERROR(this->get_logger(), "Node was not initialized correctly. Aborting run().");
             return;
         }
 
         sensor_.serialStart();
-        ros::Rate read_rate(leptrino_constants::SENSOR_READ_RATE_HZ);
-        ros::Time last_read_time = ros::Time::now();
+        rclcpp::Rate read_rate(leptrino_constants::SENSOR_READ_RATE_HZ);
+        auto last_read_time = std::chrono::steady_clock::now();
 
-        while (ros::ok())
+        while (rclcpp::ok())
         {
-            geometry_msgs::Wrench temp_wrench;
+            geometry_msgs::msg::Wrench temp_wrench;
             if (sensor_.read(temp_wrench))
             {
                 {
@@ -381,12 +398,12 @@ public:
                 }
             }
             
-            ros::Time current_time = ros::Time::now();
-            double actual_period = (current_time - last_read_time).toSec();
+            auto current_time = std::chrono::steady_clock::now();
+            double actual_period = std::chrono::duration<double>(current_time - last_read_time).count();
             last_read_time = current_time;
-            ROS_DEBUG("Sensor read loop period: %.6f s (%.1f Hz)", actual_period, 1.0 / actual_period);
+            RCLCPP_DEBUG(this->get_logger(), "Sensor read loop period: %.6f s (%.1f Hz)", actual_period, 1.0 / actual_period);
 
-            ros::spinOnce();
+            rclcpp::spin_some(shared_from_this());
             read_rate.sleep();
         }
     }
@@ -395,22 +412,21 @@ private:
     /**
      * @brief タイマーによって定期的に呼び出され、Wrenchデータを公開するコールバック関数
      */
-    void timerCallback(const ros::TimerEvent& event)
+    void timerCallback()
     {
-        // ========== [修正点 2] ROS 1 の正しいAPIを使用して周期を計算 ==========
-        ros::Duration expected_duration = event.current_expected - event.last_expected;
-        ros::Duration actual_duration = event.current_real - event.last_real;
-        ROS_DEBUG("Publish callback period: Expected: %.6f s, Actual: %.6f s",
-                  expected_duration.toSec(), actual_duration.toSec());
-
         if (!new_data_available_)
         {
-            ROS_WARN_THROTTLE(1.0, "No new data is available from the sensor to publish.");
+            static rclcpp::Time last_warn_time = this->now();
+            if ((this->now() - last_warn_time).seconds() >= 1.0)
+            {
+                RCLCPP_WARN(this->get_logger(), "No new data is available from the sensor to publish.");
+                last_warn_time = this->now();
+            }
             return;
         }
 
-        geometry_msgs::WrenchStamped msg;
-        msg.header.stamp = ros::Time::now();
+        geometry_msgs::msg::WrenchStamped msg;
+        msg.header.stamp = this->now();
         msg.header.frame_id = frame_id_;
 
         {
@@ -418,15 +434,16 @@ private:
             msg.wrench = latest_wrench_;
         }
 
-        wrench_pub_.publish(msg);
+        wrench_pub_->publish(msg);
     }
 };
 
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "leptrino_force_torque_node");
-    LeptrinoNode node;
-    node.run();
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<LeptrinoNode>();
+    node->run();
+    rclcpp::shutdown();
     return 0;
 }
