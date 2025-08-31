@@ -45,6 +45,7 @@
 
 // ROS2 Headers
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 
 namespace leptrino_constants {
@@ -314,12 +315,20 @@ private:
     std::string frame_id_;
     bool new_data_available_;
     bool is_initialized_ok_;
+    
+    // スレッド関連
+    std::thread sensor_thread_;
+    std::atomic<bool> shutdown_requested_;
 
 public:
     /**
      * @brief コンストラクタ
      */
-    LeptrinoNode() : Node("leptrino_force_torque_node"), new_data_available_(false), is_initialized_ok_(false)
+    LeptrinoNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions()) 
+        : Node("leptrino_force_torque_node", options), 
+          new_data_available_(false), 
+          is_initialized_ok_(false),
+          shutdown_requested_(false)
     {
         // Declare parameters
         this->declare_parameter("com_port", "/dev/ttyUSB0");
@@ -358,6 +367,9 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "Leptrino node started. Publishing at %.1f Hz.", rate_hz);
         is_initialized_ok_ = true;
+        
+        // センサースレッドを開始
+        startSensorThread();
     }
 
     /**
@@ -365,47 +377,57 @@ public:
      */
     ~LeptrinoNode()
     {
+        shutdown_requested_ = true;
+        
         if(is_initialized_ok_)
         {
             sensor_.serialStop();
         }
+        
+        if (sensor_thread_.joinable())
+        {
+            sensor_thread_.join();
+        }
     }
 
     /**
-     * @brief センサー読み取りループを実行します
+     * @brief センサーデータ読み取りスレッドを開始します
      */
-    void run()
+    void startSensorThread()
     {
         if (!is_initialized_ok_)
         {
-            RCLCPP_ERROR(this->get_logger(), "Node was not initialized correctly. Aborting run().");
+            RCLCPP_ERROR(this->get_logger(), "Node was not initialized correctly. Aborting sensor thread start.");
             return;
         }
 
         sensor_.serialStart();
-        rclcpp::Rate read_rate(leptrino_constants::SENSOR_READ_RATE_HZ);
-        auto last_read_time = std::chrono::steady_clock::now();
+        
+        // センサー読み取り用のスレッドを開始
+        sensor_thread_ = std::thread([this]() {
+            rclcpp::Rate read_rate(leptrino_constants::SENSOR_READ_RATE_HZ);
+            auto last_read_time = std::chrono::steady_clock::now();
 
-        while (rclcpp::ok())
-        {
-            geometry_msgs::msg::Wrench temp_wrench;
-            if (sensor_.read(temp_wrench))
+            while (rclcpp::ok() && !shutdown_requested_)
             {
+                geometry_msgs::msg::Wrench temp_wrench;
+                if (sensor_.read(temp_wrench))
                 {
-                    std::lock_guard<std::mutex> lock(wrench_mutex_);
-                    latest_wrench_ = temp_wrench;
-                    new_data_available_ = true;
+                    {
+                        std::lock_guard<std::mutex> lock(wrench_mutex_);
+                        latest_wrench_ = temp_wrench;
+                        new_data_available_ = true;
+                    }
                 }
-            }
-            
-            auto current_time = std::chrono::steady_clock::now();
-            double actual_period = std::chrono::duration<double>(current_time - last_read_time).count();
-            last_read_time = current_time;
-            RCLCPP_DEBUG(this->get_logger(), "Sensor read loop period: %.6f s (%.1f Hz)", actual_period, 1.0 / actual_period);
+                
+                auto current_time = std::chrono::steady_clock::now();
+                double actual_period = std::chrono::duration<double>(current_time - last_read_time).count();
+                last_read_time = current_time;
+                RCLCPP_DEBUG(this->get_logger(), "Sensor read loop period: %.6f s (%.1f Hz)", actual_period, 1.0 / actual_period);
 
-            rclcpp::spin_some(shared_from_this());
-            read_rate.sleep();
-        }
+                read_rate.sleep();
+            }
+        });
     }
 
 private:
@@ -439,11 +461,15 @@ private:
 };
 
 
+// ROS2コンポーネントとして登録
+RCLCPP_COMPONENTS_REGISTER_NODE(LeptrinoNode)
+
+// standaloneノードとしての実行も可能にする
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<LeptrinoNode>();
-    node->run();
+    rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }

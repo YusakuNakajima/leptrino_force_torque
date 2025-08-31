@@ -13,26 +13,50 @@ endif()
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 # Include directories
 include_directories(include)
 
-# Create executable
+# Create shared library for component
+add_library(${PROJECT_NAME}_component SHARED
+  src/leptrino_force_torque.cpp
+  src/rs_comm.cpp
+)
+
+# Target dependencies for component
+ament_target_dependencies(${PROJECT_NAME}_component
+  rclcpp
+  rclcpp_components
+  geometry_msgs
+)
+
+# Register components
+rclcpp_components_register_nodes(${PROJECT_NAME}_component "LeptrinoNode")
+
+# Create executable (for standalone execution)
 add_executable(${PROJECT_NAME}
   src/leptrino_force_torque.cpp
   src/rs_comm.cpp
 )
 
-# Target dependencies
+# Target dependencies for executable
 ament_target_dependencies(${PROJECT_NAME}
   rclcpp
+  rclcpp_components
   geometry_msgs
 )
 
-# Install executables
+# Install executables and libraries
 install(TARGETS ${PROJECT_NAME}
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS ${PROJECT_NAME}_component
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 # Install launch files
