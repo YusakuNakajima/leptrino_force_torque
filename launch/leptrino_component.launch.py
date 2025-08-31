@@ -26,7 +26,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'frame_id',
-            default_value='leptrino_link',
+            default_value='leptrino_frame',
             description='Frame ID for the sensor'
         ),
         DeclareLaunchArgument(

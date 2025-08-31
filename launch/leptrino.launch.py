@@ -19,7 +19,7 @@ def generate_launch_description():
             description='Publishin  g rate in Hz'),
         DeclareLaunchArgument(
             'frame_id',
-            default_value='leptrino',
+            default_value='leptrino_frame',
             description='Frame ID for the sensor'),
 
         Node(

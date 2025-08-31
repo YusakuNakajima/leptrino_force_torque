@@ -331,9 +331,9 @@ public:
           shutdown_requested_(false)
     {
         // Declare parameters
-        this->declare_parameter("com_port", "/dev/ttyUSB0");
-        this->declare_parameter("frame_id", "leptrino_link");
-        this->declare_parameter("rate", 100.0);
+        this->declare_parameter("com_port", "/dev/ttyACM0");
+        this->declare_parameter("frame_id", "leptrino_frame");
+        this->declare_parameter("rate", 1200.0);
 
         // Get parameters
         std::string port = this->get_parameter("com_port").as_string();
