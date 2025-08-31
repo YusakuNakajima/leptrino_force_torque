@@ -26,7 +26,7 @@ roslaunch leptrino_force_torque leptrino.launch
 <launch>
     <arg name="comport" default="/dev/ttyACM0" />
 
-    <arg name="sampling_rate" default="1000" />
+    <arg name="sampling_rate" default="1200" />
 
     <arg name="frame_id" default="leptrino" />
 
@@ -59,8 +59,8 @@ ls -l /dev/serial/by-id/
 #### パラメータ (Parameters)
 | パラメータ名 | 型 | 説明 | デフォルト値 |
 |:---|:---|:---|:---|
-| `~com_port` | `string` | センサが接続されているシリアルポート。 | `/dev/ttyUSB0` |
-| `~rate` | `int` | `wrench` トピックを公開するレート (Hz)。ノードはバックグラウンドでセンサから最高速(約1200Hz)でデータを読み取り続け、`ros::Timer`がこのパラメータで指定された周期で最新のデータを正確に公開します。 | `100` |
+| `~com_port` | `string` | センサが接続されているシリアルポート。 | `/dev/ttyACM0` |
+| `~rate` | `int` | `wrench` トピックを公開するレート (Hz)。ノードはバックグラウンドでセンサから最高速(約1200Hz)でデータを読み取り続け、`ros::Timer`がこのパラメータで指定された周期で最新のデータを正確に公開します。 | `1200` |
 | `~frame_id` | `string` | 発行される `WrenchStamped` メッセージのヘッダに書き込まれる `frame_id`。 | `leptrino` |
 
 ## ライセンス (License)
