@@ -15,8 +15,8 @@ def generate_launch_description():
             description='Path to the COM port'),
         DeclareLaunchArgument(
             'sampling_rate',
-            default_value='100.0',
-            description='Publishing rate in Hz'),
+            default_value='1200.0',
+            description='Publishin  g rate in Hz'),
         DeclareLaunchArgument(
             'frame_id',
             default_value='leptrino',
